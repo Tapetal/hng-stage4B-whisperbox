@@ -3,13 +3,14 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { loadSession, clearSession } from '@/lib/store/session';
-import { conversationsApi, usersApi } from '@/lib/api/client';
+import { conversationsApi, mapRealtimeMessage, messagesApi, usersApi } from '@/lib/api/client';
 import { getToken, getUser } from '@/lib/store/session';
 import ContactList from '@/components/chat/ContactList';
 import ChatWindow from '@/components/chat/ChatWindow';
 import type { EncryptedMessage, User } from '@/types';
 
 const WS_BASE = 'wss://whisperbox.koyeb.app/ws';
+const CONTACT_POLL_MS = 5000;
 
 type LiveMessage = {
   message: EncryptedMessage;
@@ -24,9 +25,14 @@ export default function DashboardShell() {
   const [searchQuery, setSearchQuery]     = useState('');
   const [unreadCounts, setUnreadCounts]   = useState<Record<string, number>>({});
   const [liveMessage, setLiveMessage]     = useState<LiveMessage | null>(null);
+  const [realtimeError, setRealtimeError] = useState<string | null>(null);
 
   const me = getUser();
   const activeContactRef = useRef<User | null>(null);
+  const latestMessageIdsRef = useRef<Record<string, string>>({});
+  const knownConversationIdsRef = useRef<Set<string>>(new Set());
+  const newConversationIdsRef = useRef<Set<string>>(new Set());
+  const conversationsHydratedRef = useRef(false);
 
   useEffect(() => {
     activeContactRef.current = activeContact;
@@ -43,6 +49,14 @@ export default function DashboardShell() {
     if (!token) return;
     try {
       const users = await conversationsApi.getAll(token);
+      const knownIds = knownConversationIdsRef.current;
+      users.forEach(user => {
+        if (conversationsHydratedRef.current && !knownIds.has(user.id)) {
+          newConversationIdsRef.current.add(user.id);
+        }
+        knownIds.add(user.id);
+      });
+      conversationsHydratedRef.current = true;
       setContacts(users);
     } catch {
       // Keep the current list if refresh fails.
@@ -50,6 +64,28 @@ export default function DashboardShell() {
       setLoadingContacts(false);
     }
   }, []);
+
+  const handleIncomingMessage = useCallback((incoming: EncryptedMessage, currentUserId: string) => {
+    const conversationUserId = incoming.senderId === currentUserId
+      ? incoming.recipientId
+      : incoming.senderId;
+
+    if (!conversationUserId) return;
+
+    latestMessageIdsRef.current[conversationUserId] = incoming.id;
+    loadConversations();
+
+    if (activeContactRef.current?.id === conversationUserId) {
+      setUnreadCounts(prev => ({ ...prev, [conversationUserId]: 0 }));
+      setLiveMessage({ message: incoming, nonce: Date.now() });
+      return;
+    }
+
+    setUnreadCounts(prev => ({
+      ...prev,
+      [conversationUserId]: (prev[conversationUserId] ?? 0) + 1,
+    }));
+  }, [loadConversations]);
 
   // Load existing conversations as contacts
   useEffect(() => {
@@ -84,6 +120,61 @@ export default function DashboardShell() {
   useEffect(() => {
     const token = getToken();
     if (!token || !me) return;
+    const currentUserId = me.id;
+
+    const id = setInterval(async () => {
+      if (document.visibilityState === 'hidden') return;
+
+      try {
+        const users = await conversationsApi.getAll(token);
+        const knownIds = knownConversationIdsRef.current;
+        users.forEach(user => {
+          if (conversationsHydratedRef.current && !knownIds.has(user.id)) {
+            newConversationIdsRef.current.add(user.id);
+          }
+          knownIds.add(user.id);
+        });
+        conversationsHydratedRef.current = true;
+        setContacts(users);
+
+        users.forEach(async user => {
+          if (activeContactRef.current?.id === user.id) return;
+
+          try {
+            const conversation = await messagesApi.getConversation(user.id, token);
+            const latest = conversation
+              .filter(message => message.senderId !== currentUserId)
+              .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+
+            if (!latest) return;
+
+            const previousLatestId = latestMessageIdsRef.current[user.id];
+            const isNewConversation = newConversationIdsRef.current.has(user.id);
+            latestMessageIdsRef.current[user.id] = latest.id;
+            newConversationIdsRef.current.delete(user.id);
+
+            if (previousLatestId === latest.id) return;
+            if (!previousLatestId && !isNewConversation) return;
+
+            setUnreadCounts(prev => ({
+              ...prev,
+              [user.id]: Math.max(prev[user.id] ?? 0, 1),
+            }));
+          } catch {
+            // Keep badge state if one conversation fails to refresh.
+          }
+        });
+      } catch {
+        // Keep the current list if the fallback refresh fails.
+      }
+    }, CONTACT_POLL_MS);
+
+    return () => clearInterval(id);
+  }, [me]);
+
+  useEffect(() => {
+    const token = getToken();
+    if (!token || !me) return;
     const accessToken = token;
     const currentUserId = me.id;
 
@@ -91,53 +182,39 @@ export default function DashboardShell() {
     let reconnectId: ReturnType<typeof setTimeout> | null = null;
     let ws: WebSocket | null = null;
 
-    function toEncryptedMessage(raw: any): EncryptedMessage | null {
-      if (raw?.event !== 'message.receive' || !raw.payload) return null;
-
-      return {
-        id: raw.id,
-        senderId: raw.from_user_id,
-        recipientId: raw.to_user_id,
-        ciphertext: raw.payload.ciphertext,
-        iv: raw.payload.iv,
-        encryptedKey: raw.payload.encryptedKey,
-        senderEncryptedKey: raw.payload.encryptedKeyForSelf,
-        createdAt: raw.created_at,
-      };
-    }
-
     function connect() {
+      if (typeof WebSocket === 'undefined') {
+        setRealtimeError('Realtime is unavailable in this browser.');
+        return;
+      }
+
       ws = new WebSocket(`${WS_BASE}?token=${encodeURIComponent(accessToken)}`);
 
       ws.onmessage = event => {
         try {
-          const incoming = toEncryptedMessage(JSON.parse(event.data));
-          if (!incoming) return;
+          if (typeof event.data !== 'string') return;
+          const parsed = JSON.parse(event.data);
+          if (parsed?.event && parsed.event !== 'message.receive') return;
 
-          const conversationUserId = incoming.senderId === currentUserId
-            ? incoming.recipientId
-            : incoming.senderId;
-
-          loadConversations();
-
-          if (activeContactRef.current?.id === conversationUserId) {
-            setUnreadCounts(prev => ({ ...prev, [conversationUserId]: 0 }));
-            setLiveMessage({ message: incoming, nonce: Date.now() });
-            return;
-          }
-
-          setUnreadCounts(prev => ({
-            ...prev,
-            [conversationUserId]: (prev[conversationUserId] ?? 0) + 1,
-          }));
+          const incoming = mapRealtimeMessage(parsed);
+          if (incoming) handleIncomingMessage(incoming, currentUserId);
         } catch {
           // Ignore malformed realtime frames.
         }
       };
 
+      ws.onerror = () => {
+        setRealtimeError('Realtime connection is retrying.');
+      };
+
       ws.onclose = event => {
         if (closed || event.code === 1000) return;
+        setRealtimeError('Realtime connection is retrying.');
         reconnectId = setTimeout(connect, 3000);
+      };
+
+      ws.onopen = () => {
+        setRealtimeError(null);
       };
     }
 
@@ -148,7 +225,7 @@ export default function DashboardShell() {
       if (reconnectId) clearTimeout(reconnectId);
       ws?.close(1000);
     };
-  }, [loadConversations, me]);
+  }, [handleIncomingMessage, me]);
 
   function handleLogout() {
     clearSession();
@@ -239,7 +316,7 @@ export default function DashboardShell() {
         <div className="px-4 py-3 border-t border-[#2e2e32]">
           <div className="flex items-center gap-2 text-[11px] text-zinc-500">
             <span className="text-brand-500">🔒</span>
-            End-to-end encrypted
+            {realtimeError ?? 'End-to-end encrypted'}
           </div>
         </div>
       </aside>

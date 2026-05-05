@@ -70,6 +70,37 @@ function mapMessage(message: ApiMessage): import('@/types').EncryptedMessage {
   };
 }
 
+export function mapRealtimeMessage(raw: any): import('@/types').EncryptedMessage | null {
+  const message = raw?.event ? raw : { event: 'message.receive', ...raw };
+  const payload = message.payload;
+  const id = message.id;
+  const senderId = message.from_user_id ?? message.senderId ?? message.sender_id;
+  const recipientId = message.to_user_id ?? message.recipientId ?? message.recipient_id;
+  const createdAt = message.created_at ?? message.createdAt ?? new Date().toISOString();
+
+  if (!payload || !id || !senderId || !recipientId) return null;
+
+  const senderEncryptedKey =
+    payload.encryptedKeyForSelf ??
+    payload.senderEncryptedKey ??
+    payload.encrypted_key_for_self;
+
+  if (!payload.ciphertext || !payload.iv || !payload.encryptedKey || !senderEncryptedKey) {
+    return null;
+  }
+
+  return {
+    id,
+    senderId,
+    recipientId,
+    ciphertext: payload.ciphertext,
+    iv: payload.iv,
+    encryptedKey: payload.encryptedKey,
+    senderEncryptedKey,
+    createdAt,
+  };
+}
+
 class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
