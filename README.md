@@ -5,7 +5,7 @@ A secure messaging application built with Next.js 14 where messages are encrypte
 ---
 
 ## Live Demo
-[Add your deployed URL here]
+(https://hng-stage4-b-whisperbox.vercel.app)
 
 ---
 
