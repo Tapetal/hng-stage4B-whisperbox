@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { loadSession, clearSession } from '@/lib/store/session';
-import { conversationsApi, mapRealtimeMessage, messagesApi, usersApi } from '@/lib/api/client';
+import { conversationsApi, mapRealtimeMessage, messagesApi, refreshSessionToken, usersApi } from '@/lib/api/client';
 import { getToken, getUser } from '@/lib/store/session';
 import ContactList from '@/components/chat/ContactList';
 import ChatWindow from '@/components/chat/ChatWindow';
@@ -24,6 +24,7 @@ export default function DashboardShell() {
   const [loadingContacts, setLoadingContacts] = useState(true);
   const [searchQuery, setSearchQuery]     = useState('');
   const [unreadCounts, setUnreadCounts]   = useState<Record<string, number>>({});
+  const [onlineUserIds, setOnlineUserIds] = useState<Record<string, boolean>>({});
   const [liveMessage, setLiveMessage]     = useState<LiveMessage | null>(null);
   const [realtimeError, setRealtimeError] = useState<string | null>(null);
 
@@ -33,6 +34,7 @@ export default function DashboardShell() {
   const knownConversationIdsRef = useRef<Set<string>>(new Set());
   const newConversationIdsRef = useRef<Set<string>>(new Set());
   const conversationsHydratedRef = useRef(false);
+  const latestIdsHydratedRef = useRef(false);
 
   useEffect(() => {
     activeContactRef.current = activeContact;
@@ -43,6 +45,30 @@ export default function DashboardShell() {
     const s = loadSession();
     if (!s) router.replace('/login');
   }, [router]);
+
+  const seedLatestMessageIds = useCallback(async (users: User[], currentUserId: string) => {
+    if (latestIdsHydratedRef.current) return;
+
+    const token = getToken();
+    if (!token) return;
+
+    await Promise.all(users.map(async user => {
+      try {
+        const conversation = await messagesApi.getConversation(user.id, token);
+        const latestIncoming = conversation
+          .filter(message => message.senderId !== currentUserId)
+          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+
+        if (latestIncoming) {
+          latestMessageIdsRef.current[user.id] = latestIncoming.id;
+        }
+      } catch {
+        // Keep hydrating the rest of the conversations.
+      }
+    }));
+
+    latestIdsHydratedRef.current = true;
+  }, []);
 
   const loadConversations = useCallback(async () => {
     const token = getToken();
@@ -58,12 +84,15 @@ export default function DashboardShell() {
       });
       conversationsHydratedRef.current = true;
       setContacts(users);
+      if (me) {
+        seedLatestMessageIds(users, me.id);
+      }
     } catch {
       // Keep the current list if refresh fails.
     } finally {
       setLoadingContacts(false);
     }
-  }, []);
+  }, [me, seedLatestMessageIds]);
 
   const handleIncomingMessage = useCallback((incoming: EncryptedMessage, currentUserId: string) => {
     const conversationUserId = incoming.senderId === currentUserId
@@ -86,6 +115,19 @@ export default function DashboardShell() {
       [conversationUserId]: (prev[conversationUserId] ?? 0) + 1,
     }));
   }, [loadConversations]);
+
+  const handlePresenceEvent = useCallback((eventName: string, userId?: string) => {
+    if (!userId) return;
+
+    if (eventName === 'user.online') {
+      setOnlineUserIds(prev => ({ ...prev, [userId]: true }));
+      return;
+    }
+
+    if (eventName === 'user.offline') {
+      setOnlineUserIds(prev => ({ ...prev, [userId]: false }));
+    }
+  }, []);
 
   // Load existing conversations as contacts
   useEffect(() => {
@@ -141,10 +183,13 @@ export default function DashboardShell() {
           if (activeContactRef.current?.id === user.id) return;
 
           try {
-            const conversation = await messagesApi.getConversation(user.id, token);
-            const latest = conversation
+            const latestToken = getToken();
+            if (!latestToken) return;
+            const conversation = await messagesApi.getConversation(user.id, latestToken);
+            const incomingMessages = conversation
               .filter(message => message.senderId !== currentUserId)
-              .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+              .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+            const latest = incomingMessages[0];
 
             if (!latest) return;
 
@@ -156,9 +201,18 @@ export default function DashboardShell() {
             if (previousLatestId === latest.id) return;
             if (!previousLatestId && !isNewConversation) return;
 
+            const previousIndex = previousLatestId
+              ? incomingMessages.findIndex(message => message.id === previousLatestId)
+              : -1;
+            const unreadCount = previousIndex >= 0
+              ? previousIndex
+              : incomingMessages.length;
+
+            if (unreadCount === 0) return;
+
             setUnreadCounts(prev => ({
               ...prev,
-              [user.id]: Math.max(prev[user.id] ?? 0, 1),
+              [user.id]: (prev[user.id] ?? 0) + unreadCount,
             }));
           } catch {
             // Keep badge state if one conversation fails to refresh.
@@ -175,25 +229,41 @@ export default function DashboardShell() {
   useEffect(() => {
     const token = getToken();
     if (!token || !me) return;
-    const accessToken = token;
     const currentUserId = me.id;
 
     let closed = false;
     let reconnectId: ReturnType<typeof setTimeout> | null = null;
+    let refreshId: ReturnType<typeof setInterval> | null = null;
     let ws: WebSocket | null = null;
 
-    function connect() {
+    async function reconnectWithFreshToken() {
+      const refreshedToken = await refreshSessionToken();
+      if (!refreshedToken) {
+        clearSession();
+        router.replace('/login');
+        return;
+      }
+
+      if (!closed) connect(refreshedToken);
+    }
+
+    function connect(accessToken: string) {
       if (typeof WebSocket === 'undefined') {
         setRealtimeError('Realtime is unavailable in this browser.');
         return;
       }
 
+      ws?.close(1000);
       ws = new WebSocket(`${WS_BASE}?token=${encodeURIComponent(accessToken)}`);
 
       ws.onmessage = event => {
         try {
           if (typeof event.data !== 'string') return;
           const parsed = JSON.parse(event.data);
+          if (parsed?.event === 'user.online' || parsed?.event === 'user.offline') {
+            handlePresenceEvent(parsed.event, parsed.user_id ?? parsed.userId);
+            return;
+          }
           if (parsed?.event && parsed.event !== 'message.receive') return;
 
           const incoming = mapRealtimeMessage(parsed);
@@ -209,8 +279,21 @@ export default function DashboardShell() {
 
       ws.onclose = event => {
         if (closed || event.code === 1000) return;
+        if (event.code === 4001) {
+          setRealtimeError('Refreshing secure session.');
+          reconnectWithFreshToken();
+          return;
+        }
+        if (event.code === 4003) {
+          clearSession();
+          router.replace('/login');
+          return;
+        }
         setRealtimeError('Realtime connection is retrying.');
-        reconnectId = setTimeout(connect, 3000);
+        reconnectId = setTimeout(() => {
+          const latestToken = getToken();
+          if (latestToken) connect(latestToken);
+        }, 3000);
       };
 
       ws.onopen = () => {
@@ -218,14 +301,16 @@ export default function DashboardShell() {
       };
     }
 
-    connect();
+    connect(token);
+    refreshId = setInterval(reconnectWithFreshToken, 14 * 60 * 1000);
 
     return () => {
       closed = true;
       if (reconnectId) clearTimeout(reconnectId);
+      if (refreshId) clearInterval(refreshId);
       ws?.close(1000);
     };
-  }, [handleIncomingMessage, me]);
+  }, [handleIncomingMessage, handlePresenceEvent, me, router]);
 
   function handleLogout() {
     clearSession();
@@ -306,6 +391,7 @@ export default function DashboardShell() {
           <ContactList
             contacts={filtered}
             activeId={activeContact?.id ?? null}
+            onlineUserIds={onlineUserIds}
             unreadCounts={unreadCounts}
             loading={loadingContacts}
             onSelect={handleSelectContact}
@@ -329,6 +415,7 @@ export default function DashboardShell() {
             contact={activeContact}
             me={me}
             incomingMessage={liveMessage?.message ?? null}
+            isContactOnline={onlineUserIds[activeContact.id] ?? false}
             onBack={() => setActiveContact(null)}
           />
         ) : (

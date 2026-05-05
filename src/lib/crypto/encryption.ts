@@ -118,3 +118,78 @@ export async function decryptMessage(
 
   return dec.decode(plainBuf);
 }
+
+export async function encryptFile(
+  buffer: ArrayBuffer,
+  recipientPublicKeyB64: string,
+  senderPublicKeyB64: string,
+) {
+  const aesKey = await crypto.subtle.generateKey(
+    { name: 'AES-GCM', length: 256 },
+    true,
+    ['encrypt', 'decrypt'],
+  );
+
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+
+  const cipherBuf = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    aesKey,
+    buffer,
+  );
+
+  const rawAes = await crypto.subtle.exportKey('raw', aesKey);
+
+  const recipientPubKey = await importPublicKey(recipientPublicKeyB64);
+  const wrappedForRecipient = await crypto.subtle.encrypt(
+    { name: 'RSA-OAEP' },
+    recipientPubKey,
+    rawAes,
+  );
+
+  const senderPubKey = await importPublicKey(senderPublicKeyB64);
+  const wrappedForSender = await crypto.subtle.encrypt(
+    { name: 'RSA-OAEP' },
+    senderPubKey,
+    rawAes,
+  );
+
+  return {
+    ciphertext: u8ToB64(cipherBuf),
+    iv: u8ToB64(iv.buffer as ArrayBuffer),
+    encryptedKey: u8ToB64(wrappedForRecipient),
+    senderEncryptedKey: u8ToB64(wrappedForSender),
+  };
+}
+
+export async function decryptBinary(
+  ciphertextB64: string,
+  ivB64: string,
+  wrappedKeyB64: string,
+  privateKey: CryptoKey,
+): Promise<ArrayBuffer> {
+  const wrappedKey = b64ToU8(wrappedKeyB64);
+
+  const rawAes = await crypto.subtle.decrypt(
+    { name: 'RSA-OAEP' },
+    privateKey,
+    wrappedKey.buffer as ArrayBuffer,
+  );
+
+  const aesKey = await crypto.subtle.importKey(
+    'raw',
+    rawAes,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['decrypt'],
+  );
+
+  const iv = b64ToU8(ivB64);
+  const cipher = b64ToU8(ciphertextB64);
+
+  return crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: iv.buffer as ArrayBuffer },
+    aesKey,
+    cipher.buffer as ArrayBuffer,
+  );
+}

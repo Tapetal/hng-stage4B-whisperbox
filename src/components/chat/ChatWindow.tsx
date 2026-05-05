@@ -3,36 +3,38 @@
 import { useState, useEffect, useRef, FormEvent, KeyboardEvent } from 'react';
 import { useChat } from '@/hooks/useChat';
 import { format, isToday, isYesterday } from 'date-fns';
-import type { User, DecryptedMessage, EncryptedMessage } from '@/types';
+import { motion, AnimatePresence } from 'framer-motion';
+import type { DecryptedMessage, EncryptedMessage, User } from '@/types';
 
 interface Props {
   contact: User;
   me: User;
   incomingMessage?: EncryptedMessage | null;
+  isContactOnline?: boolean;
   onBack?: () => void;
 }
 
 function formatMsgTime(iso: string) {
   const d = new Date(iso);
-  if (isToday(d))     return format(d, 'HH:mm');
+  if (isToday(d)) return format(d, 'HH:mm');
   if (isYesterday(d)) return `Yesterday ${format(d, 'HH:mm')}`;
   return format(d, 'MMM d, HH:mm');
 }
 
-const POLL_MS = 5000; // poll every 5s for new messages
+const POLL_MS = 5000;
 
-export default function ChatWindow({ contact, me, incomingMessage, onBack }: Props) {
-  const { messages, loading, sending, error, sendMessage, reload } = useChat(contact, incomingMessage);
-  const [draft, setDraft]         = useState('');
-  const bottomRef                 = useRef<HTMLDivElement>(null);
-  const inputRef                  = useRef<HTMLTextAreaElement>(null);
+export default function ChatWindow({ contact, me, incomingMessage, isContactOnline = false, onBack }: Props) {
+  const { messages, loading, sending, error, sendMessage, sendFile, reload } = useChat(contact, incomingMessage);
 
-  // Auto-scroll to bottom
+  const [draft, setDraft] = useState('');
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Poll for new messages
   useEffect(() => {
     const id = setInterval(reload, POLL_MS);
     return () => clearInterval(id);
@@ -41,10 +43,19 @@ export default function ChatWindow({ contact, me, incomingMessage, onBack }: Pro
   async function handleSend(e?: FormEvent) {
     e?.preventDefault();
     if (!draft.trim() || sending) return;
+
     const text = draft;
     setDraft('');
     await sendMessage(text);
     inputRef.current?.focus();
+  }
+
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || sending) return;
+
+    await sendFile(file);
+    e.target.value = '';
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
@@ -56,77 +67,96 @@ export default function ChatWindow({ contact, me, incomingMessage, onBack }: Pro
 
   const contactName = contact.displayName || contact.username;
   const initials = contactName.slice(0, 2).toUpperCase();
+  const presenceLabel = isContactOnline ? 'Online' : 'Offline';
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Chat header */}
-      <div className="flex items-center gap-3 px-4 py-3 border-b border-[#2e2e32] bg-[#1a1a1c] flex-shrink-0">
+    <div className="flex flex-col h-full bg-zinc-50 dark:bg-[#0f0f10] transition-colors">
+      <header className="flex items-center gap-3 px-6 py-4 border-b border-zinc-200 dark:border-white/5 bg-white/80 dark:bg-[#1a1a1c]/80 backdrop-blur-md sticky top-0 z-20 flex-shrink-0">
         <button
           onClick={onBack}
-          className="md:hidden text-zinc-400 hover:text-zinc-200 p-1 -ml-1 rounded-lg hover:bg-[#222225] transition-colors"
+          className="md:hidden text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white p-2 -ml-2 rounded-full hover:bg-zinc-100 dark:hover:bg-white/5 transition-all"
           aria-label="Back to conversations"
           type="button"
         >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-            <path d="M19 12H5" />
-            <path d="M12 19l-7-7 7-7" />
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
+            <path d="M19 12H5M12 19l-7-7 7-7" />
           </svg>
         </button>
-        <div className="w-9 h-9 rounded-full bg-violet-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
-          {initials}
+
+        <div className="relative">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-violet-600 to-indigo-600 flex items-center justify-center text-white font-bold shadow-lg shadow-violet-500/20">
+            {contact.displayName?.[0] || contact.username[0].toUpperCase()}
+          </div>
+          <div
+            className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 border-2 border-[#1a1a1c] rounded-full ${isContactOnline ? 'bg-emerald-500' : 'bg-zinc-500'}`}
+            title={presenceLabel}
+            aria-label={presenceLabel}
+          />
         </div>
+
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-zinc-100">{contactName}</p>
-          <p className="text-[11px] text-zinc-500 flex items-center gap-1">
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="text-brand-500">
-              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-            </svg>
-            End-to-end encrypted
-          </p>
+          <h3 className="text-sm font-bold text-zinc-900 dark:text-white truncate leading-tight">{contactName}</h3>
+          <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-zinc-400 dark:text-zinc-500">
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${isContactOnline ? 'bg-emerald-500' : 'bg-zinc-500'}`}
+              title={presenceLabel}
+              aria-label={presenceLabel}
+            />
+            <span className="opacity-80">{presenceLabel}</span>
+          </div>
         </div>
+
         <button
           onClick={reload}
-          className="text-zinc-500 hover:text-zinc-300 p-1.5 rounded-lg hover:bg-[#222225] transition-colors"
+          className="text-zinc-400 hover:text-zinc-600 dark:text-zinc-500 dark:hover:text-zinc-300 p-1.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-[#222225] transition-colors"
           aria-label="Refresh messages"
           title="Refresh"
+          type="button"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
-            <path d="M23 4v6h-6" /><path d="M1 20v-6h6" />
+            <path d="M23 4v6h-6" />
+            <path d="M1 20v-6h6" />
             <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
           </svg>
         </button>
-      </div>
+      </header>
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-1" aria-label="Messages" aria-live="polite">
+      <div className="flex-1 overflow-y-auto px-4 md:px-8 py-6 space-y-6 scrollbar-hide">
         {loading && messages.length === 0 && (
           <div className="flex items-center justify-center py-12">
-            <div className="text-zinc-600 text-sm flex items-center gap-2">
-              <span className="animate-spin">⚙️</span> Loading messages…
+            <div className="text-zinc-400 dark:text-zinc-600 text-sm flex items-center gap-2">
+              <span className="animate-spin text-lg">⚙️</span> Loading messages…
             </div>
           </div>
         )}
 
         {!loading && messages.length === 0 && (
           <div className="flex flex-col items-center justify-center py-12 text-center">
-            <div className="text-3xl mb-3">🔒</div>
-            <p className="text-sm text-zinc-400 font-medium">No messages yet</p>
-            <p className="text-xs text-zinc-600 mt-1">
+            <motion.div 
+              initial={{ scale: 0.8, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              className="w-20 h-20 rounded-[2.5rem] bg-brand-600/5 border border-brand-500/10 dark:border-brand-500/20 flex items-center justify-center text-4xl mb-6 shadow-2xl shadow-brand-500/5"
+            >
+              🔒
+            </motion.div>
+            <p className="text-sm text-zinc-500 dark:text-zinc-400 font-medium">No messages yet</p>
+            <p className="text-xs text-zinc-400 dark:text-zinc-600 mt-1">
               Messages are encrypted end-to-end — only you and {contactName} can read them.
             </p>
           </div>
         )}
 
-        {messages.map((msg, i) => (
-          <MessageBubble
-            key={msg.id}
-            msg={msg}
-            isMine={msg.senderId === me.id}
-            showAvatar={msg.senderId !== me.id && (i === 0 || messages[i - 1].senderId !== msg.senderId)}
-            contactInitials={initials}
-          />
-        ))}
+        <AnimatePresence initial={false}>
+          {messages.map((msg, i) => (
+            <MessageBubble
+              key={msg.id}
+              msg={msg}
+              isMine={msg.senderId === me.id}
+              showAvatar={msg.senderId !== me.id && (i === 0 || messages[i - 1].senderId !== msg.senderId)}
+              contactInitials={initials}
+            />
+          ))}
+        </AnimatePresence>
 
         {error && (
           <div role="alert" className="text-xs text-red-400 bg-red-950/30 rounded-lg px-3 py-2 text-center">
@@ -137,47 +167,71 @@ export default function ChatWindow({ contact, me, incomingMessage, onBack }: Pro
         <div ref={bottomRef} />
       </div>
 
-      {/* Input */}
-      <form
-        onSubmit={handleSend}
-        className="flex items-end gap-2 px-4 py-3 border-t border-[#2e2e32] bg-[#1a1a1c] flex-shrink-0"
-      >
-        <div className="flex-1 relative">
-          <textarea
-            ref={inputRef}
-            value={draft}
-            onChange={e => setDraft(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={`Message ${contactName}…`}
-            rows={1}
-            disabled={sending}
-            className="w-full bg-[#222225] border border-[#2e2e32] rounded-xl px-4 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 focus:border-brand-500 focus:outline-none transition-colors resize-none max-h-32 overflow-y-auto leading-relaxed disabled:opacity-60"
-            style={{ minHeight: '40px' }}
-            aria-label="Message input"
+      <footer className="p-4 md:p-6 bg-gradient-to-t from-zinc-50 dark:from-[#0f0f10] via-zinc-50 dark:via-[#0f0f10] to-transparent">
+        <form onSubmit={handleSend} className="max-w-4xl mx-auto flex items-end gap-3">
+          <input
+            ref={fileInputRef}
+            type="file"
+            className="hidden"
+            onChange={handleFileChange}
           />
-        </div>
-        <button
-          type="submit"
-          disabled={!draft.trim() || sending}
-          className="flex-shrink-0 w-10 h-10 rounded-xl bg-brand-600 hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 focus:ring-offset-[#1a1a1c]"
-          aria-label="Send message"
-        >
-          {sending ? (
-            <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-          ) : (
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="translate-x-0.5">
-              <line x1="22" y1="2" x2="11" y2="13" />
-              <polygon points="22 2 15 22 11 13 2 9 22 2" />
+
+          <motion.button
+            type="button"
+            whileTap={{ scale: 0.95 }}
+            onClick={() => fileInputRef.current?.click()}
+            disabled={sending}
+            className="flex-shrink-0 w-12 h-12 rounded-2xl bg-white dark:bg-[#1a1a1c] hover:bg-zinc-100 dark:hover:bg-[#222225] disabled:opacity-40 border border-zinc-200 dark:border-white/5 flex items-center justify-center transition-all shadow-sm dark:shadow-lg text-zinc-500 dark:text-zinc-300"
+            aria-label="Attach file"
+            title="Attach file"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+              <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
             </svg>
-          )}
-        </button>
-      </form>
+          </motion.button>
+
+          <div className="flex-1 relative">
+            <textarea
+              ref={inputRef}
+              value={draft}
+              onChange={e => setDraft(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={`Type a secure message to ${contactName}...`}
+              rows={1}
+              disabled={sending}
+              className="w-full bg-white dark:bg-[#1a1a1c] border border-zinc-200 dark:border-white/5 rounded-2xl px-5 py-3.5 text-sm text-zinc-900 dark:text-white placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-brand-500/50 transition-all resize-none max-h-32 overflow-y-auto leading-relaxed disabled:opacity-60 shadow-sm dark:shadow-2xl"
+              style={{ minHeight: '48px' }}
+              aria-label="Message input"
+            />
+          </div>
+
+          <motion.button
+            type="submit"
+            disabled={!draft.trim() || sending}
+            whileTap={{ scale: 0.95 }}
+            className="flex-shrink-0 w-12 h-12 rounded-2xl bg-brand-600 hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-all shadow-lg shadow-brand-600/20"
+            aria-label="Send message"
+          >
+            {sending ? (
+              <span className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="translate-x-0.5">
+                <line x1="22" y1="2" x2="11" y2="13" />
+                <polygon points="22 2 15 22 11 13 2 9 22 2" />
+              </svg>
+            )}
+          </motion.button>
+        </form>
+      </footer>
     </div>
   );
 }
 
 function MessageBubble({
-  msg, isMine, showAvatar, contactInitials
+  msg,
+  isMine,
+  showAvatar,
+  contactInitials,
 }: {
   msg: DecryptedMessage;
   isMine: boolean;
@@ -185,42 +239,73 @@ function MessageBubble({
   contactInitials: string;
 }) {
   return (
-    <div className={`flex items-end gap-2 ${isMine ? 'flex-row-reverse' : 'flex-row'}`}>
-      {/* Avatar placeholder (keep layout consistent) */}
-      <div className="w-6 flex-shrink-0">
+    <motion.div
+      initial={{ opacity: 0, y: 10, scale: 0.95 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      className={`flex items-end gap-3 ${isMine ? 'flex-row-reverse' : 'flex-row'}`}
+    >
+      <div className="w-8 flex-shrink-0">
         {showAvatar && !isMine && (
-          <div className="w-6 h-6 rounded-full bg-violet-600 flex items-center justify-center text-white text-[9px] font-bold">
+          <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-violet-600 to-indigo-600 flex items-center justify-center text-white text-[10px] font-black shadow-lg shadow-violet-500/10">
             {contactInitials}
           </div>
         )}
       </div>
 
-      <div className={`max-w-[72%] ${isMine ? 'items-end' : 'items-start'} flex flex-col gap-0.5`}>
+      <div className={`max-w-[85%] md:max-w-[70%] ${isMine ? 'items-end' : 'items-start'} flex flex-col gap-1`}>
         <div
           className={`
-            rounded-2xl px-3.5 py-2 text-sm leading-relaxed break-words
+            rounded-2xl px-4 py-2.5 text-sm leading-relaxed break-words shadow-sm
             ${isMine
-              ? 'bg-brand-600 text-white rounded-br-sm'
-              : 'bg-[#2e2e32] text-zinc-100 rounded-bl-sm'
-            }
-            ${msg.decryptionFailed ? 'opacity-50 italic' : ''}
+              ? 'bg-brand-600 text-white rounded-br-none'
+              : 'bg-white dark:bg-[#222225] text-zinc-900 dark:text-zinc-100 rounded-bl-none border border-zinc-200 dark:border-white/5'}
+            ${msg.decryptionFailed ? 'border-red-500/50 bg-red-500/10' : ''}
           `}
         >
           {msg.decryptionFailed ? (
-            <span className="text-xs flex items-center gap-1 text-zinc-400">
-              <span>🔓</span> Unable to decrypt message
+            <span className="text-xs flex items-center gap-2 text-zinc-500 dark:text-zinc-400">
+              <span className="text-sm">⚠️</span> Decryption error
             </span>
+          ) : msg.type === 'file' ? (
+            <FileMessage msg={msg} />
           ) : (
             msg.plaintext
           )}
         </div>
-        <div className={`flex items-center gap-1 px-1 ${isMine ? 'flex-row-reverse' : 'flex-row'}`}>
-          <span className="text-[10px] text-zinc-600">{formatMsgTime(msg.createdAt)}</span>
-          {isMine && (
-            <span title="Encrypted" className="text-[10px] text-brand-600">🔒</span>
-          )}
+
+        <div className={`flex items-center gap-1.5 px-1 ${isMine ? 'flex-row-reverse' : 'flex-row'}`}>
+          <span className="text-[10px] font-medium text-zinc-400 dark:text-zinc-600">{formatMsgTime(msg.createdAt)}</span>
+          {isMine && <span title="Encrypted" className="text-[10px] text-brand-600">🔒</span>}
         </div>
       </div>
-    </div>
+    </motion.div>
+  );
+}
+
+function FileMessage({ msg }: { msg: DecryptedMessage }) {
+  const isImage = msg.mimeType?.startsWith('image/');
+
+  if (isImage && msg.fileUrl) {
+    return (
+      <a href={msg.fileUrl} download={msg.fileName} className="block">
+        <img
+          src={msg.fileUrl}
+          alt={msg.fileName || 'Encrypted image'}
+          className="max-w-[240px] md:max-w-xs rounded-xl border border-zinc-200 dark:border-white/10"
+        />
+        <p className="mt-2 text-xs opacity-80 truncate">{msg.fileName}</p>
+      </a>
+    );
+  }
+
+  return (
+    <a
+      href={msg.fileUrl}
+      download={msg.fileName}
+      className="flex items-center gap-3 min-w-[180px] max-w-[260px]"
+    >
+      <span className="text-2xl">📄</span>
+      <span className="text-xs font-medium truncate">{msg.fileName || 'Encrypted file'}</span>
+    </a>
   );
 }

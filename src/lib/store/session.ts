@@ -64,3 +64,9 @@ export function updateUser(user: User): void {
   const session = loadSession();
   if (session) saveSession({ ...session, user });
 }
+
+export function updateAccessToken(accessToken: string): void {
+  const session = loadSession();
+  if (!session) return;
+  saveSession({ ...session, accessToken });
+}

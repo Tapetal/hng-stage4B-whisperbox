@@ -164,7 +164,23 @@ wss://whisperbox.koyeb.app/ws?token=<access_token>
 
 ---
 
-## 🛡 Security Decisions
+## 📂 File & Media Support
+
+WhisperBox supports encrypted file transfer while maintaining the zero-knowledge guarantee:
+
+- **Client-side Encryption**: Files are read as `ArrayBuffer` and encrypted using AES-GCM (256-bit) before upload.
+- **Key Wrapping**: The unique AES key for each file is wrapped using the recipient's RSA-OAEP public key.
+- **Safe Previews**: Images are decrypted in-memory and rendered using `URL.createObjectURL`, ensuring plaintext data never touches the disk or server.
+- **Integrity**: AES-GCM provides authenticated encryption, preventing the server from tampering with file blobs.
+
+**Supported Media:**
+- 📷 Images (Direct preview)
+- 📄 Documents (PDFs, Docs, etc. via secure download)
+- 🎥 Videos (Browser-supported formats)
+
+---
+
+## � Security Decisions
 
 | Decision | Reason |
 |----------|--------|
@@ -207,7 +223,9 @@ src/
 │   ├── login/page.tsx
 │   ├── signup/page.tsx
 │   ├── dashboard/page.tsx
-│   └── layout.tsx
+│   ├── global.css
+│   ├── layout.tsx
+│   └── page.tsx
 ├── components/
 │   ├── auth/
 │   │   ├── LoginForm.tsx
@@ -219,8 +237,7 @@ src/
 │       └── DashboardShell.tsx
 ├── hooks/
 │   ├── useSession.ts
-│   ├── useChat.ts
-│   └── useWebSocket.ts
+│   └── useChat.ts
 ├── lib/
 │   ├── api/client.ts
 │   ├── crypto/

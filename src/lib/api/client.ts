@@ -4,6 +4,8 @@
  * This client only handles transport — no crypto here.
  */
 
+import { loadSession, updateAccessToken } from '@/lib/store/session';
+
 const BASE = 'https://whisperbox.koyeb.app';
 
 type ApiUser = {
@@ -34,6 +36,8 @@ type ApiMessage = {
     encryptedKey: string;
     encryptedKeyForSelf: string;
   };
+  delivered?: boolean;
+  read?: boolean;
   created_at: string;
 };
 
@@ -66,6 +70,9 @@ function mapMessage(message: ApiMessage): import('@/types').EncryptedMessage {
     iv: message.payload.iv,
     encryptedKey: message.payload.encryptedKey,
     senderEncryptedKey: message.payload.encryptedKeyForSelf,
+    delivered: message.delivered,
+    read: message.read,
+    status: message.read ? 'read' : message.delivered ? 'delivered' : 'sent',
     createdAt: message.created_at,
   };
 }
@@ -77,6 +84,8 @@ export function mapRealtimeMessage(raw: any): import('@/types').EncryptedMessage
   const senderId = message.from_user_id ?? message.senderId ?? message.sender_id;
   const recipientId = message.to_user_id ?? message.recipientId ?? message.recipient_id;
   const createdAt = message.created_at ?? message.createdAt ?? new Date().toISOString();
+  const delivered = message.delivered;
+  const read = message.read;
 
   if (!payload || !id || !senderId || !recipientId) return null;
 
@@ -97,6 +106,9 @@ export function mapRealtimeMessage(raw: any): import('@/types').EncryptedMessage
     iv: payload.iv,
     encryptedKey: payload.encryptedKey,
     senderEncryptedKey,
+    delivered,
+    read,
+    status: read ? 'read' : delivered ? 'delivered' : 'sent',
     createdAt,
   };
 }
@@ -113,13 +125,41 @@ async function request<T>(
   options: RequestInit = {},
   token?: string,
 ): Promise<T> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...(options.headers as Record<string, string> || {}),
-  };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  async function send(accessToken?: string) {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...((options.headers as Record<string, string>) || {}),
+    };
+    if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
 
-  const res = await fetch(`${BASE}${path}`, { ...options, headers });
+    return fetch(`${BASE}${path}`, { ...options, headers });
+  }
+
+  async function refreshAccessToken() {
+    const session = loadSession();
+    if (!session?.refreshToken) return null;
+
+    const res = await fetch(`${BASE}/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: session.refreshToken }),
+    });
+
+    if (!res.ok) return null;
+
+    const body = await res.json() as { access_token: string };
+    updateAccessToken(body.access_token);
+    return body.access_token;
+  }
+
+  let res = await send(token);
+
+  if (res.status === 401 && token) {
+    const refreshedToken = await refreshAccessToken();
+    if (refreshedToken) {
+      res = await send(refreshedToken);
+    }
+  }
 
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
@@ -132,6 +172,23 @@ async function request<T>(
 
   const text = await res.text();
   return text ? JSON.parse(text) : ({} as T);
+}
+
+export async function refreshSessionToken() {
+  const session = loadSession();
+  if (!session?.refreshToken) return null;
+
+  const res = await fetch(`${BASE}/auth/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh_token: session.refreshToken }),
+  });
+
+  if (!res.ok) return null;
+
+  const body = await res.json() as { access_token: string };
+  updateAccessToken(body.access_token);
+  return body.access_token;
 }
 
 // ── Auth endpoints ────────────────────────────────────────────────────────────
