@@ -1,13 +1,20 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { loadSession, clearSession } from '@/lib/store/session';
 import { conversationsApi, usersApi } from '@/lib/api/client';
 import { getToken, getUser } from '@/lib/store/session';
 import ContactList from '@/components/chat/ContactList';
 import ChatWindow from '@/components/chat/ChatWindow';
-import type { User } from '@/types';
+import type { EncryptedMessage, User } from '@/types';
+
+const WS_BASE = 'wss://whisperbox.koyeb.app/ws';
+
+type LiveMessage = {
+  message: EncryptedMessage;
+  nonce: number;
+};
 
 export default function DashboardShell() {
   const router = useRouter();
@@ -15,9 +22,15 @@ export default function DashboardShell() {
   const [contacts, setContacts]           = useState<User[]>([]);
   const [loadingContacts, setLoadingContacts] = useState(true);
   const [searchQuery, setSearchQuery]     = useState('');
-  const [sidebarOpen, setSidebarOpen]     = useState(false);
+  const [unreadCounts, setUnreadCounts]   = useState<Record<string, number>>({});
+  const [liveMessage, setLiveMessage]     = useState<LiveMessage | null>(null);
 
   const me = getUser();
+  const activeContactRef = useRef<User | null>(null);
+
+  useEffect(() => {
+    activeContactRef.current = activeContact;
+  }, [activeContact]);
 
   // Auth guard
   useEffect(() => {
@@ -25,20 +38,35 @@ export default function DashboardShell() {
     if (!s) router.replace('/login');
   }, [router]);
 
-  // Load existing conversations as contacts
-  useEffect(() => {
+  const loadConversations = useCallback(async () => {
     const token = getToken();
     if (!token) return;
-    conversationsApi.getAll(token)
-      .then(users => setContacts(users))
-      .catch(() => {})
-      .finally(() => setLoadingContacts(false));
+    try {
+      const users = await conversationsApi.getAll(token);
+      setContacts(users);
+    } catch {
+      // Keep the current list if refresh fails.
+    } finally {
+      setLoadingContacts(false);
+    }
   }, []);
+
+  // Load existing conversations as contacts
+  useEffect(() => {
+    loadConversations();
+  }, [loadConversations]);
 
   useEffect(() => {
     const token = getToken();
     const query = searchQuery.trim();
-    if (!token || query.length < 2) return;
+    if (!token) return;
+
+    if (query.length === 0) {
+      loadConversations();
+      return;
+    }
+
+    if (query.length < 2) return;
 
     const id = setTimeout(() => {
       setLoadingContacts(true);
@@ -51,11 +79,85 @@ export default function DashboardShell() {
     }, 250);
 
     return () => clearTimeout(id);
-  }, [searchQuery, me]);
+  }, [loadConversations, searchQuery, me]);
+
+  useEffect(() => {
+    const token = getToken();
+    if (!token || !me) return;
+    const accessToken = token;
+    const currentUserId = me.id;
+
+    let closed = false;
+    let reconnectId: ReturnType<typeof setTimeout> | null = null;
+    let ws: WebSocket | null = null;
+
+    function toEncryptedMessage(raw: any): EncryptedMessage | null {
+      if (raw?.event !== 'message.receive' || !raw.payload) return null;
+
+      return {
+        id: raw.id,
+        senderId: raw.from_user_id,
+        recipientId: raw.to_user_id,
+        ciphertext: raw.payload.ciphertext,
+        iv: raw.payload.iv,
+        encryptedKey: raw.payload.encryptedKey,
+        senderEncryptedKey: raw.payload.encryptedKeyForSelf,
+        createdAt: raw.created_at,
+      };
+    }
+
+    function connect() {
+      ws = new WebSocket(`${WS_BASE}?token=${encodeURIComponent(accessToken)}`);
+
+      ws.onmessage = event => {
+        try {
+          const incoming = toEncryptedMessage(JSON.parse(event.data));
+          if (!incoming) return;
+
+          const conversationUserId = incoming.senderId === currentUserId
+            ? incoming.recipientId
+            : incoming.senderId;
+
+          loadConversations();
+
+          if (activeContactRef.current?.id === conversationUserId) {
+            setUnreadCounts(prev => ({ ...prev, [conversationUserId]: 0 }));
+            setLiveMessage({ message: incoming, nonce: Date.now() });
+            return;
+          }
+
+          setUnreadCounts(prev => ({
+            ...prev,
+            [conversationUserId]: (prev[conversationUserId] ?? 0) + 1,
+          }));
+        } catch {
+          // Ignore malformed realtime frames.
+        }
+      };
+
+      ws.onclose = event => {
+        if (closed || event.code === 1000) return;
+        reconnectId = setTimeout(connect, 3000);
+      };
+    }
+
+    connect();
+
+    return () => {
+      closed = true;
+      if (reconnectId) clearTimeout(reconnectId);
+      ws?.close(1000);
+    };
+  }, [loadConversations, me]);
 
   function handleLogout() {
     clearSession();
     router.replace('/login');
+  }
+
+  function handleSelectContact(contact: User) {
+    setActiveContact(contact);
+    setUnreadCounts(prev => ({ ...prev, [contact.id]: 0 }));
   }
 
   const filtered = contacts.filter(c =>
@@ -69,9 +171,8 @@ export default function DashboardShell() {
     <div className="h-screen flex overflow-hidden bg-[#0f0f10]">
       {/* Sidebar */}
       <aside className={`
-        flex flex-col w-72 bg-[#1a1a1c] border-r border-[#2e2e32] flex-shrink-0
-        absolute inset-y-0 left-0 z-20 transition-transform md:relative md:translate-x-0
-        ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
+        flex flex-col w-full md:w-80 bg-[#1a1a1c] border-r border-[#2e2e32] flex-shrink-0
+        ${activeContact ? 'hidden md:flex' : 'flex'}
       `}>
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-4 border-b border-[#2e2e32]">
@@ -128,8 +229,9 @@ export default function DashboardShell() {
           <ContactList
             contacts={filtered}
             activeId={activeContact?.id ?? null}
+            unreadCounts={unreadCounts}
             loading={loadingContacts}
-            onSelect={c => { setActiveContact(c); setSidebarOpen(false); }}
+            onSelect={handleSelectContact}
           />
         </div>
 
@@ -142,37 +244,15 @@ export default function DashboardShell() {
         </div>
       </aside>
 
-      {/* Overlay for mobile */}
-      {sidebarOpen && (
-        <div
-          className="fixed inset-0 bg-black/50 z-10 md:hidden"
-          onClick={() => setSidebarOpen(false)}
-        />
-      )}
-
       {/* Chat area */}
-      <main className="flex-1 flex flex-col min-w-0">
-        {/* Mobile header */}
-        <div className="md:hidden flex items-center gap-3 px-4 py-3 border-b border-[#2e2e32] bg-[#1a1a1c]">
-          <button
-            onClick={() => setSidebarOpen(true)}
-            className="text-zinc-400 hover:text-zinc-200 p-1"
-            aria-label="Open contacts"
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
-              <line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" />
-            </svg>
-          </button>
-          <span className="text-sm font-semibold text-zinc-100">
-            {activeContact ? activeContact.username : 'WhisperBox'}
-          </span>
-        </div>
-
+      <main className={`${activeContact ? 'flex' : 'hidden md:flex'} flex-1 flex-col min-w-0`}>
         {activeContact ? (
           <ChatWindow
             key={activeContact.id}
             contact={activeContact}
             me={me}
+            incomingMessage={liveMessage?.message ?? null}
+            onBack={() => setActiveContact(null)}
           />
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-center px-6">

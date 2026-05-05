@@ -3,11 +3,13 @@
 import { useState, useEffect, useRef, FormEvent, KeyboardEvent } from 'react';
 import { useChat } from '@/hooks/useChat';
 import { format, isToday, isYesterday } from 'date-fns';
-import type { User, DecryptedMessage } from '@/types';
+import type { User, DecryptedMessage, EncryptedMessage } from '@/types';
 
 interface Props {
   contact: User;
   me: User;
+  incomingMessage?: EncryptedMessage | null;
+  onBack?: () => void;
 }
 
 function formatMsgTime(iso: string) {
@@ -19,8 +21,8 @@ function formatMsgTime(iso: string) {
 
 const POLL_MS = 5000; // poll every 5s for new messages
 
-export default function ChatWindow({ contact, me }: Props) {
-  const { messages, loading, sending, error, sendMessage, reload } = useChat(contact);
+export default function ChatWindow({ contact, me, incomingMessage, onBack }: Props) {
+  const { messages, loading, sending, error, sendMessage, reload } = useChat(contact, incomingMessage);
   const [draft, setDraft]         = useState('');
   const bottomRef                 = useRef<HTMLDivElement>(null);
   const inputRef                  = useRef<HTMLTextAreaElement>(null);
@@ -59,6 +61,17 @@ export default function ChatWindow({ contact, me }: Props) {
     <div className="flex flex-col h-full">
       {/* Chat header */}
       <div className="flex items-center gap-3 px-4 py-3 border-b border-[#2e2e32] bg-[#1a1a1c] flex-shrink-0">
+        <button
+          onClick={onBack}
+          className="md:hidden text-zinc-400 hover:text-zinc-200 p-1 -ml-1 rounded-lg hover:bg-[#222225] transition-colors"
+          aria-label="Back to conversations"
+          type="button"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+            <path d="M19 12H5" />
+            <path d="M12 19l-7-7 7-7" />
+          </svg>
+        </button>
         <div className="w-9 h-9 rounded-full bg-violet-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
           {initials}
         </div>

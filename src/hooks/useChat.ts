@@ -5,9 +5,9 @@ import { messagesApi, usersApi } from '@/lib/api/client';
 import { encryptMessage, decryptMessage } from '@/lib/crypto/encryption';
 import { loadKeyPair } from '@/lib/crypto/keys';
 import { getToken, getUser } from '@/lib/store/session';
-import type { DecryptedMessage, User } from '@/types';
+import type { DecryptedMessage, EncryptedMessage, User } from '@/types';
 
-export function useChat(contact: User | null) {
+export function useChat(contact: User | null, incomingMessage?: EncryptedMessage | null) {
   const contactId = contact?.id ?? null;
   const [messages, setMessages]       = useState<DecryptedMessage[]>([]);
   const [loading, setLoading]         = useState(false);
@@ -15,6 +15,30 @@ export function useChat(contact: User | null) {
   const [error, setError]             = useState<string | null>(null);
 
   const me = getUser();
+
+  const decryptEncryptedMessage = useCallback(async (msg: EncryptedMessage): Promise<DecryptedMessage> => {
+    if (!me) return { ...msg, plaintext: '', decryptionFailed: true };
+
+    try {
+      const keyPair = await loadKeyPair(me.id);
+      if (!keyPair) throw new Error('Encryption keys not found.');
+
+      const wrappedKey = msg.senderId === me.id
+        ? msg.senderEncryptedKey
+        : msg.encryptedKey;
+
+      const plaintext = await decryptMessage(
+        msg.ciphertext,
+        msg.iv,
+        wrappedKey,
+        keyPair.privateKey,
+      );
+
+      return { ...msg, plaintext, decryptionFailed: false };
+    } catch {
+      return { ...msg, plaintext: '', decryptionFailed: true };
+    }
+  }, [me]);
 
   // Load + decrypt conversation
   const loadMessages = useCallback(async () => {
@@ -34,24 +58,7 @@ export function useChat(contact: User | null) {
       }
 
       const decrypted: DecryptedMessage[] = await Promise.all(
-        encrypted.map(async msg => {
-          try {
-            // Use correct wrapped key depending on whether we're sender or recipient
-            const wrappedKey = msg.senderId === me.id
-              ? msg.senderEncryptedKey
-              : msg.encryptedKey;
-
-            const plaintext = await decryptMessage(
-              msg.ciphertext,
-              msg.iv,
-              wrappedKey,
-              keyPair.privateKey,
-            );
-            return { ...msg, plaintext, decryptionFailed: false };
-          } catch {
-            return { ...msg, plaintext: '', decryptionFailed: true };
-          }
-        }),
+        encrypted.map(decryptEncryptedMessage),
       );
 
       // Sort by createdAt ascending
@@ -62,11 +69,30 @@ export function useChat(contact: User | null) {
     } finally {
       setLoading(false);
     }
-  }, [contactId, me]);
+  }, [contactId, decryptEncryptedMessage, me]);
 
   useEffect(() => {
     loadMessages();
   }, [loadMessages]);
+
+  useEffect(() => {
+    if (!incomingMessage || !contactId || !me) return;
+
+    const belongsToConversation =
+      incomingMessage.senderId === contactId ||
+      incomingMessage.recipientId === contactId;
+
+    if (!belongsToConversation) return;
+
+    decryptEncryptedMessage(incomingMessage).then(decrypted => {
+      setMessages(prev => {
+        if (prev.some(msg => msg.id === decrypted.id)) return prev;
+        return [...prev, decrypted].sort(
+          (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+        );
+      });
+    });
+  }, [contactId, decryptEncryptedMessage, incomingMessage, me]);
 
   // Send a message
   const sendMessage = useCallback(async (plaintext: string) => {

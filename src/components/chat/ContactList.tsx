@@ -5,6 +5,7 @@ import type { User } from '@/types';
 interface Props {
   contacts: User[];
   activeId: string | null;
+  unreadCounts: Record<string, number>;
   loading: boolean;
   onSelect: (user: User) => void;
 }
@@ -24,7 +25,7 @@ function avatarColor(id: string) {
   return COLORS[h];
 }
 
-export default function ContactList({ contacts, activeId, loading, onSelect }: Props) {
+export default function ContactList({ contacts, activeId, unreadCounts, loading, onSelect }: Props) {
   if (loading) {
     return (
       <div className="px-3 space-y-1">
@@ -56,6 +57,7 @@ export default function ContactList({ contacts, activeId, loading, onSelect }: P
           <ContactButton
             contact={contact}
             activeId={activeId}
+            unreadCount={unreadCounts[contact.id] ?? 0}
             onSelect={onSelect}
           />
         </li>
@@ -67,10 +69,12 @@ export default function ContactList({ contacts, activeId, loading, onSelect }: P
 function ContactButton({
   contact,
   activeId,
+  unreadCount,
   onSelect,
 }: {
   contact: User;
   activeId: string | null;
+  unreadCount: number;
   onSelect: (user: User) => void;
 }) {
   const name = contact.displayName || contact.username;
@@ -95,7 +99,14 @@ function ContactButton({
         <p className="text-sm font-medium truncate">{name}</p>
         <p className="text-xs text-zinc-500 truncate">@{contact.username}</p>
       </div>
-      {activeId === contact.id && (
+      {unreadCount > 0 ? (
+        <span
+          className="ml-auto min-w-5 h-5 px-1.5 rounded-full bg-brand-600 text-white text-[11px] font-semibold flex items-center justify-center flex-shrink-0"
+          aria-label={`${unreadCount} unread messages`}
+        >
+          {unreadCount > 9 ? '9+' : unreadCount}
+        </span>
+      ) : activeId === contact.id && (
         <span className="w-1.5 h-1.5 rounded-full bg-brand-500 flex-shrink-0" />
       )}
     </button>
