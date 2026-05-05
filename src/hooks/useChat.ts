@@ -7,24 +7,14 @@ import { loadKeyPair } from '@/lib/crypto/keys';
 import { getToken, getUser } from '@/lib/store/session';
 import type { DecryptedMessage, User } from '@/types';
 
-export function useChat(contactId: string | null) {
+export function useChat(contact: User | null) {
+  const contactId = contact?.id ?? null;
   const [messages, setMessages]       = useState<DecryptedMessage[]>([]);
-  const [contact, setContact]         = useState<User | null>(null);
   const [loading, setLoading]         = useState(false);
   const [sending, setSending]         = useState(false);
   const [error, setError]             = useState<string | null>(null);
 
   const me = getUser();
-
-  // Load contact info
-  useEffect(() => {
-    if (!contactId) return;
-    const token = getToken();
-    if (!token) return;
-    usersApi.getById(contactId, token)
-      .then(setContact)
-      .catch(e => setError(e.message));
-  }, [contactId]);
 
   // Load + decrypt conversation
   const loadMessages = useCallback(async () => {
@@ -39,7 +29,7 @@ export function useChat(contactId: string | null) {
       const keyPair   = await loadKeyPair(me.id);
 
       if (!keyPair) {
-        setError('Your encryption keys were not found. Please sign out and sign back in.');
+        setError('Your private key is locked. Please sign out and sign back in to unlock it.');
         return;
       }
 
@@ -89,15 +79,25 @@ export function useChat(contactId: string | null) {
     try {
       const keyPair = await loadKeyPair(me.id);
       if (!keyPair) throw new Error('Encryption keys not found.');
+      const recipientPublicKey = contact.publicKey ?? await usersApi.getPublicKey(contactId, token);
+      const senderPublicKey = me.publicKey ?? await usersApi.getPublicKey(me.id, token);
 
       const encrypted = await encryptMessage(
         plaintext.trim(),
-        contact.publicKey,    // recipient's public key
-        me.publicKey,         // sender's own public key (to re-read own msgs)
+        recipientPublicKey,
+        senderPublicKey,
       );
 
       const sent = await messagesApi.send(
-        { recipientId: contactId, ...encrypted },
+        {
+          to: contactId,
+          payload: {
+            ciphertext: encrypted.ciphertext,
+            iv: encrypted.iv,
+            encryptedKey: encrypted.encryptedKey,
+            encryptedKeyForSelf: encrypted.senderEncryptedKey,
+          },
+        },
         token,
       );
 
@@ -115,5 +115,5 @@ export function useChat(contactId: string | null) {
     }
   }, [contactId, contact, me]);
 
-  return { messages, contact, loading, sending, error, sendMessage, reload: loadMessages };
+  return { messages, loading, sending, error, sendMessage, reload: loadMessages };
 }

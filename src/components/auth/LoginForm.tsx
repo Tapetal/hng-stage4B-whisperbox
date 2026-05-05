@@ -3,36 +3,41 @@
 import { useState, FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { authApi } from '@/lib/api/client';
-import { loadKeyPair, generateKeyPair, storeKeyPair } from '@/lib/crypto/keys';
+import { exportPublicKey, storeWrappedKeyPair, unwrapPrivateKey } from '@/lib/crypto/keys';
 import { saveSession } from '@/lib/store/session';
 
 export default function LoginForm() {
   const router = useRouter();
-  const [email, setEmail]       = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError]       = useState<string | null>(null);
   const [loading, setLoading]   = useState(false);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!email.trim() || !password) return;
+    if (!username.trim() || !password) return;
 
     setError(null);
     setLoading(true);
     try {
-      const { token, user } = await authApi.login({ email: email.trim(), password });
+      const { accessToken, refreshToken, user } = await authApi.login({ username: username.trim(), password });
 
-      // Check if we have keys for this user; if not, regenerate
-      // (handles case where user logs in on new device)
-      const existing = await loadKeyPair(user.id);
-      if (!existing) {
-        // Keys are device-local — on new device, messages from old device
-        // cannot be decrypted. This is the forward secrecy trade-off.
-        const kp = await generateKeyPair();
-        await storeKeyPair(user.id, kp);
+      if (!user.publicKey || !user.wrappedPrivateKey || !user.pbkdf2Salt) {
+        throw new Error('This account is missing encryption key backup data.');
       }
 
-      saveSession({ token, user });
+      const privateKey = await unwrapPrivateKey(user.wrappedPrivateKey, user.pbkdf2Salt, password);
+      const publicKey = await crypto.subtle.importKey(
+        'spki',
+        Uint8Array.from(atob(user.publicKey), c => c.charCodeAt(0)).buffer as ArrayBuffer,
+        { name: 'RSA-OAEP', hash: 'SHA-256' },
+        true,
+        ['encrypt'],
+      );
+      const publicKeyB64 = await exportPublicKey(publicKey);
+
+      await storeWrappedKeyPair(user.id, publicKey, privateKey, user.wrappedPrivateKey, user.pbkdf2Salt);
+      saveSession({ accessToken, refreshToken, user: { ...user, publicKey: publicKeyB64 } });
       router.replace('/dashboard');
     } catch (err: any) {
       setError(err.message || 'Login failed');
@@ -50,18 +55,18 @@ export default function LoginForm() {
       )}
 
       <div>
-        <label htmlFor="login-email" className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wide">
-          Email
+        <label htmlFor="login-username" className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wide">
+          Username
         </label>
         <input
-          id="login-email"
-          type="email"
-          autoComplete="email"
+          id="login-username"
+          type="text"
+          autoComplete="username"
           required
-          value={email}
-          onChange={e => setEmail(e.target.value)}
+          value={username}
+          onChange={e => setUsername(e.target.value)}
           className="w-full bg-[#222225] border border-[#2e2e32] rounded-lg px-3 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 focus:border-brand-500 focus:outline-none transition-colors"
-          placeholder="you@example.com"
+          placeholder="alice"
         />
       </div>
 

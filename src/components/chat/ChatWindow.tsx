@@ -20,7 +20,7 @@ function formatMsgTime(iso: string) {
 const POLL_MS = 5000; // poll every 5s for new messages
 
 export default function ChatWindow({ contact, me }: Props) {
-  const { messages, loading, sending, error, sendMessage, reload } = useChat(contact.id);
+  const { messages, loading, sending, error, sendMessage, reload } = useChat(contact);
   const [draft, setDraft]         = useState('');
   const bottomRef                 = useRef<HTMLDivElement>(null);
   const inputRef                  = useRef<HTMLTextAreaElement>(null);
@@ -52,7 +52,8 @@ export default function ChatWindow({ contact, me }: Props) {
     }
   }
 
-  const initials = contact.username.slice(0, 2).toUpperCase();
+  const contactName = contact.displayName || contact.username;
+  const initials = contactName.slice(0, 2).toUpperCase();
 
   return (
     <div className="flex flex-col h-full">
@@ -62,7 +63,7 @@ export default function ChatWindow({ contact, me }: Props) {
           {initials}
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-zinc-100">{contact.username}</p>
+          <p className="text-sm font-semibold text-zinc-100">{contactName}</p>
           <p className="text-[11px] text-zinc-500 flex items-center gap-1">
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="text-brand-500">
               <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
@@ -99,7 +100,7 @@ export default function ChatWindow({ contact, me }: Props) {
             <div className="text-3xl mb-3">🔒</div>
             <p className="text-sm text-zinc-400 font-medium">No messages yet</p>
             <p className="text-xs text-zinc-600 mt-1">
-              Messages are encrypted end-to-end — only you and {contact.username} can read them.
+              Messages are encrypted end-to-end — only you and {contactName} can read them.
             </p>
           </div>
         )}
@@ -134,7 +135,7 @@ export default function ChatWindow({ contact, me }: Props) {
             value={draft}
             onChange={e => setDraft(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={`Message ${contact.username}…`}
+            placeholder={`Message ${contactName}…`}
             rows={1}
             disabled={sending}
             className="w-full bg-[#222225] border border-[#2e2e32] rounded-xl px-4 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 focus:border-brand-500 focus:outline-none transition-colors resize-none max-h-32 overflow-y-auto leading-relaxed disabled:opacity-60"

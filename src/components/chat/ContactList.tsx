@@ -53,31 +53,51 @@ export default function ContactList({ contacts, activeId, loading, onSelect }: P
     <ul className="px-3 space-y-0.5" role="list" aria-label="Contacts">
       {contacts.map(contact => (
         <li key={contact.id}>
-          <button
-            onClick={() => onSelect(contact)}
-            className={`
-              w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-colors
-              ${activeId === contact.id
-                ? 'bg-brand-600/15 text-zinc-100'
-                : 'hover:bg-[#222225] text-zinc-300 hover:text-zinc-100'
-              }
-            `}
-            aria-pressed={activeId === contact.id}
-            aria-label={`Chat with ${contact.username}`}
-          >
-            <div className={`w-9 h-9 rounded-full ${avatarColor(contact.id)} flex items-center justify-center text-white text-xs font-bold flex-shrink-0`}>
-              {getInitials(contact.username)}
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate">{contact.username}</p>
-              <p className="text-xs text-zinc-500 truncate">{contact.email}</p>
-            </div>
-            {activeId === contact.id && (
-              <span className="w-1.5 h-1.5 rounded-full bg-brand-500 flex-shrink-0" />
-            )}
-          </button>
+          <ContactButton
+            contact={contact}
+            activeId={activeId}
+            onSelect={onSelect}
+          />
         </li>
       ))}
     </ul>
+  );
+}
+
+function ContactButton({
+  contact,
+  activeId,
+  onSelect,
+}: {
+  contact: User;
+  activeId: string | null;
+  onSelect: (user: User) => void;
+}) {
+  const name = contact.displayName || contact.username;
+
+  return (
+    <button
+      onClick={() => onSelect(contact)}
+      className={`
+        w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-colors
+        ${activeId === contact.id
+          ? 'bg-brand-600/15 text-zinc-100'
+          : 'hover:bg-[#222225] text-zinc-300 hover:text-zinc-100'
+        }
+      `}
+      aria-pressed={activeId === contact.id}
+      aria-label={`Chat with ${name}`}
+    >
+      <div className={`w-9 h-9 rounded-full ${avatarColor(contact.id)} flex items-center justify-center text-white text-xs font-bold flex-shrink-0`}>
+        {getInitials(name)}
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium truncate">{name}</p>
+        <p className="text-xs text-zinc-500 truncate">@{contact.username}</p>
+      </div>
+      {activeId === contact.id && (
+        <span className="w-1.5 h-1.5 rounded-full bg-brand-500 flex-shrink-0" />
+      )}
+    </button>
   );
 }

@@ -3,13 +3,13 @@
 import { useState, FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { authApi } from '@/lib/api/client';
-import { generateKeyPair, exportPublicKey, storeKeyPair } from '@/lib/crypto/keys';
+import { generateKeyPair, exportPublicKey, storeWrappedKeyPair, wrapPrivateKey } from '@/lib/crypto/keys';
 import { saveSession } from '@/lib/store/session';
 
 export default function SignupForm() {
   const router = useRouter();
   const [username, setUsername] = useState('');
-  const [email, setEmail]       = useState('');
+  const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError]       = useState<string | null>(null);
   const [loading, setLoading]   = useState(false);
@@ -17,7 +17,7 @@ export default function SignupForm() {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!username.trim() || !email.trim() || !password) return;
+    if (!username.trim() || !password) return;
 
     setError(null);
     setLoading(true);
@@ -27,20 +27,23 @@ export default function SignupForm() {
       // 1. Generate key pair BEFORE registering
       const keyPair = await generateKeyPair();
       const publicKeyB64 = await exportPublicKey(keyPair.publicKey);
+      const { wrappedPrivateKey, pbkdf2Salt } = await wrapPrivateKey(keyPair.privateKey, password);
 
-      // 2. Register — public key goes to server, private key stays local
-      const { token, user } = await authApi.signup({
+      // 2. Register — public key and encrypted private key backup go to server
+      const { accessToken, refreshToken, user } = await authApi.signup({
         username: username.trim(),
-        email: email.trim(),
+        displayName: displayName.trim() || username.trim(),
         password,
         publicKey: publicKeyB64,
+        wrappedPrivateKey,
+        pbkdf2Salt,
       });
 
-      // 3. Store private key locally in IndexedDB
-      await storeKeyPair(user.id, keyPair);
+      // 3. Store only encrypted key material durably; keep private key unlocked in memory
+      await storeWrappedKeyPair(user.id, keyPair.publicKey, keyPair.privateKey, wrappedPrivateKey, pbkdf2Salt);
 
       // 4. Create session
-      saveSession({ token, user });
+      saveSession({ accessToken, refreshToken, user });
       router.replace('/dashboard');
     } catch (err: any) {
       setError(err.message || 'Registration failed');
@@ -82,18 +85,18 @@ export default function SignupForm() {
       </div>
 
       <div>
-        <label htmlFor="signup-email" className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wide">
-          Email
+        <label htmlFor="signup-display-name" className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wide">
+          Display name
         </label>
         <input
-          id="signup-email"
-          type="email"
-          autoComplete="email"
+          id="signup-display-name"
+          type="text"
+          autoComplete="name"
           required
-          value={email}
-          onChange={e => setEmail(e.target.value)}
+          value={displayName}
+          onChange={e => setDisplayName(e.target.value)}
           className="w-full bg-[#222225] border border-[#2e2e32] rounded-lg px-3 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 focus:border-brand-500 focus:outline-none transition-colors"
-          placeholder="you@example.com"
+          placeholder="Alice"
         />
       </div>
 
@@ -116,7 +119,7 @@ export default function SignupForm() {
 
       <div className="flex items-start gap-2 text-xs text-zinc-500 bg-[#222225] rounded-lg p-3">
         <span className="text-brand-400 mt-0.5 flex-shrink-0">🔑</span>
-        <span>An RSA-2048 key pair will be generated on your device. Your private key never leaves this browser.</span>
+        <span>An RSA-2048 key pair will be generated on your device. Your private key is wrapped with your password before backup.</span>
       </div>
 
       <button

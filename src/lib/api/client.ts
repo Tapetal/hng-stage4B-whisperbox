@@ -6,6 +6,70 @@
 
 const BASE = 'https://whisperbox.koyeb.app';
 
+type ApiUser = {
+  id: string;
+  username: string;
+  display_name?: string;
+  public_key?: string;
+  wrapped_private_key?: string;
+  pbkdf2_salt?: string;
+  created_at?: string;
+};
+
+type ApiAuthResponse = {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+  expires_in: number;
+  user: ApiUser;
+};
+
+type ApiMessage = {
+  id: string;
+  from_user_id: string;
+  to_user_id: string;
+  payload: {
+    ciphertext: string;
+    iv: string;
+    encryptedKey: string;
+    encryptedKeyForSelf: string;
+  };
+  created_at: string;
+};
+
+function mapUser(user: ApiUser): import('@/types').User {
+  return {
+    id: user.id,
+    username: user.username,
+    displayName: user.display_name,
+    publicKey: user.public_key,
+    wrappedPrivateKey: user.wrapped_private_key,
+    pbkdf2Salt: user.pbkdf2_salt,
+    createdAt: user.created_at ?? '',
+  };
+}
+
+function mapAuth(body: ApiAuthResponse): import('@/types').AuthResponse {
+  return {
+    accessToken: body.access_token,
+    refreshToken: body.refresh_token,
+    user: mapUser(body.user),
+  };
+}
+
+function mapMessage(message: ApiMessage): import('@/types').EncryptedMessage {
+  return {
+    id: message.id,
+    senderId: message.from_user_id,
+    recipientId: message.to_user_id,
+    ciphertext: message.payload.ciphertext,
+    iv: message.payload.iv,
+    encryptedKey: message.payload.encryptedKey,
+    senderEncryptedKey: message.payload.encryptedKeyForSelf,
+    createdAt: message.created_at,
+  };
+}
+
 class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -41,37 +105,83 @@ async function request<T>(
 
 // ── Auth endpoints ────────────────────────────────────────────────────────────
 export const authApi = {
-  signup(body: { username: string; email: string; password: string; publicKey: string }) {
-    return request<{ token: string; user: import('@/types').User }>('/auth/register', {
+  async signup(body: {
+    username: string;
+    displayName: string;
+    password: string;
+    publicKey: string;
+    wrappedPrivateKey: string;
+    pbkdf2Salt: string;
+  }) {
+    const res = await request<ApiAuthResponse>('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        username: body.username,
+        display_name: body.displayName,
+        password: body.password,
+        public_key: body.publicKey,
+        wrapped_private_key: body.wrappedPrivateKey,
+        pbkdf2_salt: body.pbkdf2Salt,
+      }),
+    });
+    return mapAuth(res);
+  },
+
+  async login(body: { username: string; password: string }) {
+    const res = await request<ApiAuthResponse>('/auth/login', {
       method: 'POST',
       body: JSON.stringify(body),
     });
+    return mapAuth(res);
   },
 
-  login(body: { email: string; password: string }) {
-    return request<{ token: string; user: import('@/types').User }>('/auth/login', {
+  async me(token: string) {
+    return mapUser(await request<ApiUser>('/auth/me', {}, token));
+  },
+
+  refresh(refreshToken: string) {
+    return request<{ access_token: string; token_type: string; expires_in: number }>('/auth/refresh', {
       method: 'POST',
-      body: JSON.stringify(body),
+      body: JSON.stringify({ refresh_token: refreshToken }),
     });
   },
 
-  me(token: string) {
-    return request<import('@/types').User>('/auth/me', {}, token);
+  logout(refreshToken: string, token: string) {
+    return request<{ detail: string }>('/auth/logout', {
+      method: 'POST',
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    }, token);
   },
 };
 
 // ── Users endpoints ───────────────────────────────────────────────────────────
 export const usersApi = {
-  getAll(token: string) {
-    return request<import('@/types').User[]>('/users', {}, token);
+  async getPublicKey(id: string, token: string) {
+    const res = await request<{ public_key: string }>(`/users/${id}/public-key`, {}, token);
+    return res.public_key;
   },
 
-  getById(id: string, token: string) {
-    return request<import('@/types').User>(`/users/${id}`, {}, token);
+  async search(query: string, token: string) {
+    const users = await request<ApiUser[]>(`/users/search?q=${encodeURIComponent(query)}`, {}, token);
+    return users.map(mapUser);
   },
+};
 
-  search(query: string, token: string) {
-    return request<import('@/types').User[]>(`/users/search?q=${encodeURIComponent(query)}`, {}, token);
+export const conversationsApi = {
+  async getAll(token: string) {
+    const conversations = await request<Array<{
+      user_id: string;
+      display_name?: string;
+      username: string;
+      last_message_at?: string;
+    }>>('/conversations', {}, token);
+
+    return conversations.map(c => ({
+      id: c.user_id,
+      username: c.username,
+      displayName: c.display_name,
+      createdAt: c.last_message_at ?? '',
+    }));
   },
 };
 
@@ -81,18 +191,15 @@ export const messagesApi = {
     body: import('@/types').SendMessagePayload,
     token: string,
   ) {
-    return request<import('@/types').EncryptedMessage>('/messages', {
+    return request<ApiMessage>('/messages', {
       method: 'POST',
       body: JSON.stringify(body),
-    }, token);
+    }, token).then(mapMessage);
   },
 
-  getConversation(userId: string, token: string) {
-    return request<import('@/types').EncryptedMessage[]>(`/messages/${userId}`, {}, token);
-  },
-
-  getInbox(token: string) {
-    return request<import('@/types').EncryptedMessage[]>('/messages/inbox', {}, token);
+  async getConversation(userId: string, token: string) {
+    const messages = await request<ApiMessage[]>(`/conversations/${userId}/messages`, {}, token);
+    return messages.map(mapMessage);
   },
 
   deleteMessage(id: string, token: string) {

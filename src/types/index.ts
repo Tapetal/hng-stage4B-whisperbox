@@ -2,18 +2,22 @@
 export interface User {
   id: string;
   username: string;
-  email: string;
-  publicKey: string;   // Base64-encoded SPKI public key
+  displayName?: string;
+  publicKey?: string;   // Base64-encoded SPKI public key
+  wrappedPrivateKey?: string;
+  pbkdf2Salt?: string;
   createdAt: string;
 }
 
 export interface AuthResponse {
-  token: string;
+  accessToken: string;
+  refreshToken: string;
   user: User;
 }
 
 export interface Session {
-  token: string;
+  accessToken: string;
+  refreshToken: string;
   user: User;
 }
 
@@ -39,11 +43,13 @@ export interface DecryptedMessage extends EncryptedMessage {
 }
 
 export interface SendMessagePayload {
-  recipientId: string;
-  ciphertext: string;
-  encryptedKey: string;
-  iv: string;
-  senderEncryptedKey: string;
+  to: string;
+  payload: {
+    ciphertext: string;
+    encryptedKey: string;
+    iv: string;
+    encryptedKeyForSelf: string;
+  };
 }
 
 // ── UI ────────────────────────────────────────────────────────────────────────

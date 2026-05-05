@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { loadSession, clearSession } from '@/lib/store/session';
-import { usersApi } from '@/lib/api/client';
+import { conversationsApi, usersApi } from '@/lib/api/client';
 import { getToken, getUser } from '@/lib/store/session';
 import ContactList from '@/components/chat/ContactList';
 import ChatWindow from '@/components/chat/ChatWindow';
@@ -25,17 +25,33 @@ export default function DashboardShell() {
     if (!s) router.replace('/login');
   }, [router]);
 
-  // Load all users as contacts
+  // Load existing conversations as contacts
   useEffect(() => {
     const token = getToken();
     if (!token) return;
-    usersApi.getAll(token)
-      .then(users => {
-        if (me) setContacts(users.filter(u => u.id !== me.id));
-      })
+    conversationsApi.getAll(token)
+      .then(users => setContacts(users))
       .catch(() => {})
       .finally(() => setLoadingContacts(false));
-  }, [me]);
+  }, []);
+
+  useEffect(() => {
+    const token = getToken();
+    const query = searchQuery.trim();
+    if (!token || query.length < 2) return;
+
+    const id = setTimeout(() => {
+      setLoadingContacts(true);
+      usersApi.search(query, token)
+        .then(users => {
+          if (me) setContacts(users.filter(u => u.id !== me.id));
+        })
+        .catch(() => {})
+        .finally(() => setLoadingContacts(false));
+    }, 250);
+
+    return () => clearTimeout(id);
+  }, [searchQuery, me]);
 
   function handleLogout() {
     clearSession();
@@ -44,7 +60,7 @@ export default function DashboardShell() {
 
   const filtered = contacts.filter(c =>
     c.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    c.email.toLowerCase().includes(searchQuery.toLowerCase())
+    (c.displayName ?? '').toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   if (!me) return null;
@@ -64,7 +80,7 @@ export default function DashboardShell() {
               {me.username[0]?.toUpperCase()}
             </div>
             <div className="min-w-0">
-              <p className="text-sm font-semibold text-zinc-100 truncate">{me.username}</p>
+              <p className="text-sm font-semibold text-zinc-100 truncate">{me.displayName || me.username}</p>
               <p className="text-xs text-zinc-500 flex items-center gap-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-brand-500 inline-block" />
                 Online
