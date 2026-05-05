@@ -3,15 +3,20 @@
 import { useState, FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { authApi } from '@/lib/api/client';
-import { exportPublicKey, storeWrappedKeyPair, unwrapPrivateKey } from '@/lib/crypto/keys';
+import {
+  unwrapPrivateKey,
+  storeWrappedKeyPair,
+  importPublicKey, // 👈 use this instead of manual atob
+} from '@/lib/crypto/keys';
 import { saveSession } from '@/lib/store/session';
 
 export default function LoginForm() {
   const router = useRouter();
+
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError]       = useState<string | null>(null);
-  const [loading, setLoading]   = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -19,25 +24,56 @@ export default function LoginForm() {
 
     setError(null);
     setLoading(true);
-    try {
-      const { accessToken, refreshToken, user } = await authApi.login({ username: username.trim(), password });
 
+    try {
+      const { accessToken, refreshToken, user } = await authApi.login({
+        username: username.trim(),
+        password,
+      });
+
+      // ✅ validate key data exists
       if (!user.publicKey || !user.wrappedPrivateKey || !user.pbkdf2Salt) {
-        throw new Error('This account is missing encryption key backup data.');
+        throw new Error('Missing encryption key data for this account.');
       }
 
-      const privateKey = await unwrapPrivateKey(user.wrappedPrivateKey, user.pbkdf2Salt, password);
-      const publicKey = await crypto.subtle.importKey(
-        'spki',
-        Uint8Array.from(atob(user.publicKey), c => c.charCodeAt(0)).buffer as ArrayBuffer,
-        { name: 'RSA-OAEP', hash: 'SHA-256' },
-        true,
-        ['encrypt'],
-      );
-      const publicKeyB64 = await exportPublicKey(publicKey);
+      // 🔐 UNWRAP PRIVATE KEY (with debug)
+      let privateKey;
+      try {
+        privateKey = await unwrapPrivateKey(
+          user.wrappedPrivateKey,
+          user.pbkdf2Salt,
+          password
+        );
+      } catch (e: any) {
+        alert(
+          'UNWRAP FAILED: ' +
+            (e?.name || 'Error') +
+            ' - ' +
+            (e?.message || JSON.stringify(e))
+        );
+        throw new Error('Failed to restore your encryption keys.');
+      }
 
-      await storeWrappedKeyPair(user.id, publicKey, privateKey, user.wrappedPrivateKey, user.pbkdf2Salt);
-      saveSession({ accessToken, refreshToken, user: { ...user, publicKey: publicKeyB64 } });
+      // 🔐 IMPORT PUBLIC KEY (SAFE — no atob hacks)
+      const publicKey = await importPublicKey(user.publicKey);
+
+      // 💾 Store keys
+      await storeWrappedKeyPair(
+        user.id,
+        publicKey,
+        privateKey,
+        user.wrappedPrivateKey,
+        user.pbkdf2Salt
+      );
+
+      // 💾 Save session (no need to re-export public key)
+      saveSession({
+        accessToken,
+        refreshToken,
+        user,
+      });
+
+      // 🚀 Redirect
       router.replace('/dashboard');
     } catch (err: any) {
       setError(err.message || 'Login failed');
@@ -49,13 +85,19 @@ export default function LoginForm() {
   return (
     <form onSubmit={handleSubmit} className="space-y-4" noValidate>
       {error && (
-        <div role="alert" className="text-sm text-red-400 bg-red-950/40 border border-red-900/50 rounded-lg px-3 py-2.5">
+        <div
+          role="alert"
+          className="text-sm text-red-400 bg-red-950/40 border border-red-900/50 rounded-lg px-3 py-2.5"
+        >
           {error}
         </div>
       )}
 
       <div>
-        <label htmlFor="login-username" className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wide">
+        <label
+          htmlFor="login-username"
+          className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wide"
+        >
           Username
         </label>
         <input
@@ -64,14 +106,17 @@ export default function LoginForm() {
           autoComplete="username"
           required
           value={username}
-          onChange={e => setUsername(e.target.value)}
+          onChange={(e) => setUsername(e.target.value)}
           className="w-full bg-[#222225] border border-[#2e2e32] rounded-lg px-3 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 focus:border-brand-500 focus:outline-none transition-colors"
           placeholder="alice"
         />
       </div>
 
       <div>
-        <label htmlFor="login-password" className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wide">
+        <label
+          htmlFor="login-password"
+          className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wide"
+        >
           Password
         </label>
         <input
@@ -80,7 +125,7 @@ export default function LoginForm() {
           autoComplete="current-password"
           required
           value={password}
-          onChange={e => setPassword(e.target.value)}
+          onChange={(e) => setPassword(e.target.value)}
           className="w-full bg-[#222225] border border-[#2e2e32] rounded-lg px-3 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 focus:border-brand-500 focus:outline-none transition-colors"
           placeholder="••••••••"
         />
