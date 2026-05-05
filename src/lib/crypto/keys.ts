@@ -30,7 +30,10 @@ async function getDB() {
 }
 
 function cleanBuffer(u8: Uint8Array): ArrayBuffer {
-  return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+  return u8.buffer.slice(
+    u8.byteOffset,
+    u8.byteOffset + u8.byteLength
+  ) as ArrayBuffer;
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
