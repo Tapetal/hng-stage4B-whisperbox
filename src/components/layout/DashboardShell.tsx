@@ -30,6 +30,7 @@ export default function DashboardShell() {
 
   const me = getUser();
   const activeContactRef = useRef<User | null>(null);
+  const searchQueryRef = useRef('');
   const latestMessageIdsRef = useRef<Record<string, string>>({});
   const knownConversationIdsRef = useRef<Set<string>>(new Set());
   const newConversationIdsRef = useRef<Set<string>>(new Set());
@@ -39,6 +40,10 @@ export default function DashboardShell() {
   useEffect(() => {
     activeContactRef.current = activeContact;
   }, [activeContact]);
+
+  useEffect(() => {
+    searchQueryRef.current = searchQuery.trim();
+  }, [searchQuery]);
 
   // Auth guard
   useEffect(() => {
@@ -83,7 +88,9 @@ export default function DashboardShell() {
         knownIds.add(user.id);
       });
       conversationsHydratedRef.current = true;
-      setContacts(users);
+      if (searchQueryRef.current.length === 0) {
+        setContacts(users);
+      }
       if (me) {
         seedLatestMessageIds(users, me.id);
       }
@@ -100,6 +107,10 @@ export default function DashboardShell() {
       : incoming.senderId;
 
     if (!conversationUserId) return;
+
+    if (incoming.senderId !== currentUserId) {
+      setOnlineUserIds(prev => ({ ...prev, [incoming.senderId]: true }));
+    }
 
     latestMessageIdsRef.current[conversationUserId] = incoming.id;
     loadConversations();
@@ -177,7 +188,9 @@ export default function DashboardShell() {
           knownIds.add(user.id);
         });
         conversationsHydratedRef.current = true;
-        setContacts(users);
+        if (searchQueryRef.current.length === 0) {
+          setContacts(users);
+        }
 
         users.forEach(async user => {
           if (activeContactRef.current?.id === user.id) return;
@@ -330,10 +343,10 @@ export default function DashboardShell() {
   if (!me) return null;
 
   return (
-    <div className="h-screen flex overflow-hidden bg-[#0f0f10]">
+    <div className="h-[100dvh] flex overflow-hidden bg-[#0f0f10]">
       {/* Sidebar */}
       <aside className={`
-        flex flex-col w-full md:w-80 bg-[#1a1a1c] border-r border-[#2e2e32] flex-shrink-0
+        flex flex-col w-full md:w-80 lg:w-96 bg-[#1a1a1c] border-r border-[#2e2e32] flex-shrink-0 min-h-0
         ${activeContact ? 'hidden md:flex' : 'flex'}
       `}>
         {/* Header */}
@@ -382,7 +395,7 @@ export default function DashboardShell() {
         </div>
 
         {/* Contacts */}
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 min-h-0 overflow-y-auto">
           <div className="px-3 pb-1">
             <p className="text-[10px] font-semibold text-zinc-600 uppercase tracking-widest px-1 mb-1">
               People
@@ -408,7 +421,7 @@ export default function DashboardShell() {
       </aside>
 
       {/* Chat area */}
-      <main className={`${activeContact ? 'flex' : 'hidden md:flex'} flex-1 flex-col min-w-0`}>
+      <main className={`${activeContact ? 'flex' : 'hidden md:flex'} flex-1 flex-col min-w-0 min-h-0`}>
         {activeContact ? (
           <ChatWindow
             key={activeContact.id}

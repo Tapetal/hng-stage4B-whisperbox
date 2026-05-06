@@ -43,8 +43,12 @@ function sortMessages(messages: any[]) {
 }
 
 function upsertMessage(messages: any[], message: any) {
-  const next = messages.some(m => m.id === message.id)
-    ? messages.map(m => (m.id === message.id ? { ...m, ...message } : m))
+  const matchesMessage = (m: any) =>
+    m.id === message.id ||
+    (m.ciphertext === message.ciphertext && m.iv === message.iv && m.senderId === message.senderId);
+
+  const next = messages.some(matchesMessage)
+    ? messages.map(m => (matchesMessage(m) ? { ...m, ...message, localId: m.localId } : m))
     : [...messages, message];
 
   return sortMessages(next);
@@ -204,6 +208,7 @@ export function useChat(contact: any, incomingMessage?: any) {
         encryptedKey: encrypted.encryptedKey,
         senderEncryptedKey: encrypted.senderEncryptedKey,
         createdAt: new Date().toISOString(),
+        localId: tempId,
         type: 'text',
         plaintext: text,
         status: 'sending',
@@ -222,16 +227,13 @@ export function useChat(contact: any, incomingMessage?: any) {
         token
       );
 
-      setMessages(prev => sortMessages(
-        prev
-          .filter(msg => msg.id !== tempId)
-          .concat({
+      setMessages(prev => upsertMessage(prev, {
             ...sent,
+            localId: tempId,
             type: 'text',
             plaintext: text,
             status: sent.read ? 'read' : sent.delivered ? 'delivered' : 'sent',
-          })
-      ));
+          }));
     } catch (e: any) {
       setMessages(prev => prev.filter(msg => msg.id !== tempId));
       setError(e.message || 'Failed to send message');
@@ -289,6 +291,7 @@ export function useChat(contact: any, incomingMessage?: any) {
         encryptedKey: encrypted.encryptedKey,
         senderEncryptedKey: encrypted.senderEncryptedKey,
         createdAt: new Date().toISOString(),
+        localId: tempId,
         type: 'file',
         fileName: file.name,
         mimeType,
@@ -309,18 +312,15 @@ export function useChat(contact: any, incomingMessage?: any) {
         token
       );
 
-      setMessages(prev => sortMessages(
-        prev
-          .filter(msg => msg.id !== tempId)
-          .concat({
+      setMessages(prev => upsertMessage(prev, {
           ...sent,
+          localId: tempId,
           type: 'file',
           fileName: file.name,
           mimeType,
           fileUrl,
           status: sent.read ? 'read' : sent.delivered ? 'delivered' : 'sent',
-        })
-      ));
+        }));
     } catch (e: any) {
       setMessages(prev => prev.filter(msg => msg.id !== tempId));
       setError(e.message || 'Failed to send file');

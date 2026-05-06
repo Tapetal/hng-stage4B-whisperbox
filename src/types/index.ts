@@ -69,20 +69,3 @@ export interface Contact extends User {
 
 export type MessageType = 'text' | 'file';
 export type MessageStatus = 'sending' | 'sent' | 'delivered' | 'read' | 'failed';
-
-export interface EncryptedMessage {
-  id: string;
-  senderId: string;
-  recipientId: string;
-  type?: MessageType;
-  ciphertext: string;
-  encryptedKey: string;
-  iv: string;
-  senderEncryptedKey: string;
-  fileName?: string;
-  mimeType?: string;
-  delivered?: boolean;
-  read?: boolean;
-  status?: MessageStatus;
-  createdAt: string;
-}
